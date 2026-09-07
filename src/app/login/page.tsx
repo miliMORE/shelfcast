@@ -1,12 +1,14 @@
 "use client";
 
-import { FormEvent, useState } from "react";
+import { FormEvent, useState, Suspense } from "react";
 import { signIn } from "next-auth/react";
-import { useRouter } from "next/navigation";
+import { useRouter, useSearchParams } from "next/navigation";
 import Link from "next/link";
 
-export default function LoginPage() {
+function LoginForm() {
   const router = useRouter();
+  const searchParams = useSearchParams();
+  const callbackUrl = searchParams.get("callbackUrl") || "/library";
   const [error, setError] = useState("");
   const [loading, setLoading] = useState(false);
 
@@ -25,7 +27,7 @@ export default function LoginPage() {
       setError("Invalid email or password");
       return;
     }
-    router.push("/library");
+    router.push(callbackUrl);
     router.refresh();
   }
 
@@ -54,5 +56,13 @@ export default function LoginPage() {
         No account? <Link href="/signup">Sign up</Link>
       </p>
     </div>
+  );
+}
+
+export default function LoginPage() {
+  return (
+    <Suspense fallback={<div className="mx-auto max-w-md text-sm text-slate-500">Loading…</div>}>
+      <LoginForm />
+    </Suspense>
   );
 }

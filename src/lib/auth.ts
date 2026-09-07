@@ -40,6 +40,19 @@ export const authOptions: NextAuthOptions = {
       if (user) {
         token.id = user.id;
         token.plan = (user as { plan?: string }).plan ?? "FREE";
+      } else if (token.id) {
+        const dbUser = await prisma.user.findUnique({
+          where: { id: token.id as string },
+          select: { plan: true, planStatus: true },
+        });
+        if (dbUser) {
+          const active =
+            dbUser.plan === "PRO" &&
+            (!dbUser.planStatus ||
+              dbUser.planStatus === "active" ||
+              dbUser.planStatus === "trialing");
+          token.plan = active ? "PRO" : "FREE";
+        }
       }
       return token;
     },

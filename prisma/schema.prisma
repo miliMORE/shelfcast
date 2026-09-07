@@ -27,16 +27,22 @@ enum JobStatus {
 }
 
 model User {
-  id           String   @id @default(cuid())
-  name         String?
-  email        String   @unique
-  passwordHash String
-  plan         Plan     @default(FREE)
-  createdAt    DateTime @default(now())
-  updatedAt    DateTime @updatedAt
-  books        Book[]
-  accounts     Account[]
-  sessions     Session[]
+  id                   String    @id @default(cuid())
+  name                 String?
+  email                String    @unique
+  passwordHash         String
+  plan                 Plan      @default(FREE)
+  planStatus           String?
+  stripeCustomerId     String?   @unique
+  stripeSubscriptionId String?   @unique
+  stripePriceId        String?
+  ttsCharsUsedMonth    Int       @default(0)
+  ttsCharsResetAt      DateTime?
+  createdAt            DateTime  @default(now())
+  updatedAt            DateTime  @updatedAt
+  books                Book[]
+  accounts             Account[]
+  sessions             Session[]
 }
 
 model Account {

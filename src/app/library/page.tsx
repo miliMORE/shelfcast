@@ -22,14 +22,14 @@ export default async function LibraryPage() {
     <div className="space-y-8">
       <div className="flex flex-wrap items-end justify-between gap-4">
         <div>
-          <h1 className="text-2xl font-bold">Your library</h1>
+          <h1 className="text-2xl font-bold tracking-tight text-brand-900">Your library</h1>
           <p className="text-slate-600">Books and conversion jobs for your account.</p>
         </div>
       </div>
 
       <UploadForm />
 
-      <div className="overflow-hidden rounded-xl border border-slate-200 bg-white">
+      <div className="overflow-hidden rounded-2xl border border-slate-200 bg-white shadow-soft">
         {books.length === 0 ? (
           <p className="p-6 text-sm text-slate-500">No books yet. Upload an EPUB or PDF to get started.</p>
         ) : (
@@ -51,7 +51,7 @@ export default async function LibraryPage() {
                   </div>
                   <Link
                     href={"/books/" + book.id}
-                    className="rounded-md border border-slate-200 px-3 py-1.5 text-sm text-slate-700 no-underline hover:bg-slate-50"
+                    className="rounded-lg border border-slate-200 px-3 py-1.5 text-sm font-medium text-slate-700 no-underline hover:bg-slate-50"
                   >
                     Open
                   </Link>

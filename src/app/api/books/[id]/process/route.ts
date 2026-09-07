@@ -2,6 +2,8 @@ import { NextResponse } from "next/server";
 import { prisma } from "@/lib/prisma";
 import { requireUser } from "@/lib/session";
 import { processAudioJob } from "@/lib/pipeline/process";
+import { getUsageSnapshot } from "@/lib/billing/usage";
+import { getTtsProviderForPlan } from "@/lib/tts";
 
 export async function POST(
   _req: Request,
@@ -14,15 +16,17 @@ export async function POST(
   const book = await prisma.book.findFirst({ where: { id, userId: user.id } });
   if (!book) return NextResponse.json({ error: "Not found" }, { status: 404 });
 
+  const usage = await getUsageSnapshot(user.id);
+  const provider = getTtsProviderForPlan(usage?.plan, usage?.planStatus);
+
   const job = await prisma.audioJob.create({
     data: {
       bookId: book.id,
       status: "PENDING",
-      ttsProvider: process.env.TTS_PROVIDER || "mock",
+      ttsProvider: provider.name,
     },
   });
 
-  // Run inline for local MVP reliability
   try {
     await processAudioJob(job.id);
   } catch (e) {

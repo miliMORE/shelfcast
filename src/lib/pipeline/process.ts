@@ -1,8 +1,15 @@
 import { prisma } from "@/lib/prisma";
 import { extractFromFile, chunkText } from "./extract";
-import { getTtsProvider } from "@/lib/tts";
-import { assembleAudio, writeAssembled } from "./assemble";
+import { getTtsProviderForPlan } from "@/lib/tts";
+import { assembleAudio } from "./assemble";
 import { audioPath, writeFileSafe } from "@/lib/storage";
+import {
+  assertCanConsumeChars,
+  consumeTtsChars,
+  effectivePlan,
+  ensureUsageMonth,
+} from "@/lib/billing/usage";
+import { isProPlan } from "@/lib/billing/plans";
 
 /**
  * Run conversion for a book/job. Designed to be awaited from an API route
@@ -11,12 +18,28 @@ import { audioPath, writeFileSafe } from "@/lib/storage";
 export async function processAudioJob(jobId: string) {
   const job = await prisma.audioJob.findUnique({
     where: { id: jobId },
-    include: { book: true },
+    include: {
+      book: {
+        include: {
+          user: {
+            select: {
+              id: true,
+              plan: true,
+              planStatus: true,
+              ttsCharsUsedMonth: true,
+              ttsCharsResetAt: true,
+            },
+          },
+        },
+      },
+    },
   });
   if (!job) throw new Error("Job not found");
 
   const { book } = job;
-  const provider = getTtsProvider();
+  const billingUser = await ensureUsageMonth(book.user);
+  const plan = effectivePlan(billingUser);
+  const provider = getTtsProviderForPlan(billingUser.plan, billingUser.planStatus);
 
   try {
     await prisma.audioJob.update({
@@ -59,9 +82,22 @@ export async function processAudioJob(jobId: string) {
       }
     }
 
-    // Cap chunks for free-tier local demo speed
-    const maxChunks = book.userId ? 40 : 40;
+    // Free: keep demos snappy; Pro: allow longer books (still soft-capped).
+    const maxChunks = isProPlan(plan) ? 400 : 40;
     const chunks = allChunks.slice(0, maxChunks);
+    const totalChars = chunks.reduce((sum, c) => sum + c.text.length, 0);
+
+    try {
+      await assertCanConsumeChars(book.userId, totalChars);
+    } catch (quotaErr) {
+      const message =
+        quotaErr instanceof Error ? quotaErr.message : "TTS quota exceeded";
+      await prisma.audioJob.update({
+        where: { id: jobId },
+        data: { status: "FAILED", errorMessage: message, progress: 0 },
+      });
+      return;
+    }
 
     await prisma.audioJob.update({
       where: { id: jobId },
@@ -75,16 +111,20 @@ export async function processAudioJob(jobId: string) {
 
     const audioParts: Buffer[] = [];
     let extension = "wav";
-    let mimeHint = "audio/wav";
 
     for (let i = 0; i < chunks.length; i++) {
+      const chunkTextLen = chunks[i].text.length;
+      // Re-check remaining quota mid-job in case of concurrent jobs
+      await assertCanConsumeChars(book.userId, chunkTextLen);
+
       const result = await provider.synthesize({
         text: chunks[i].text,
         chunkIndex: i,
       });
       audioParts.push(result.audio);
       extension = result.extension;
-      mimeHint = result.mimeType;
+
+      await consumeTtsChars(book.userId, chunkTextLen);
 
       const progress = 15 + Math.floor(((i + 1) / chunks.length) * 70);
       await prisma.audioJob.update({

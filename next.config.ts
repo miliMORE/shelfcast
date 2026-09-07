@@ -6,7 +6,7 @@ const nextConfig: NextConfig = {
       bodySizeLimit: "20mb",
     },
   },
-  serverExternalPackages: ["pdf-parse", "epub2", "bcryptjs"],
+  serverExternalPackages: ["pdf-parse", "epub2", "bcryptjs", "stripe"],
 };
 
 export default nextConfig;

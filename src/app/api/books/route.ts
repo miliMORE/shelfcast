@@ -4,6 +4,9 @@ import { prisma } from "@/lib/prisma";
 import { requireUser } from "@/lib/session";
 import { bookUploadPath, writeFileSafe } from "@/lib/storage";
 import { processAudioJob } from "@/lib/pipeline/process";
+import { bookLimitForPlan } from "@/lib/billing/plans";
+import { effectivePlan, getUsageSnapshot } from "@/lib/billing/usage";
+import { getTtsProviderForPlan } from "@/lib/tts";
 
 export async function GET() {
   const user = await requireUser();
@@ -21,10 +24,26 @@ export async function GET() {
 }
 
 export async function POST(req: Request) {
-  const user = await requireUser();
-  if (!user) return NextResponse.json({ error: "Unauthorized" }, { status: 401 });
+  const sessionUser = await requireUser();
+  if (!sessionUser) return NextResponse.json({ error: "Unauthorized" }, { status: 401 });
 
   try {
+    const usage = await getUsageSnapshot(sessionUser.id);
+    if (!usage) {
+      return NextResponse.json({ error: "User not found" }, { status: 404 });
+    }
+
+    const plan = effectivePlan(usage);
+    const limit = bookLimitForPlan(plan);
+    const bookCount = await prisma.book.count({ where: { userId: sessionUser.id } });
+    if (bookCount >= limit) {
+      const msg =
+        plan === "FREE"
+          ? `Free plan allows ${limit} books in your library. Upgrade to Pro for up to 100.`
+          : `Pro soft cap of ${limit} books reached. Delete a book or contact support.`;
+      return NextResponse.json({ error: msg }, { status: 403 });
+    }
+
     const form = await req.formData();
     const file = form.get("file");
     if (!file || !(file instanceof File)) {
@@ -40,10 +59,11 @@ export async function POST(req: Request) {
       return NextResponse.json({ error: "Only EPUB and PDF are supported" }, { status: 400 });
     }
 
-    // Create book row first for id
+    const provider = getTtsProviderForPlan(usage.plan, usage.planStatus);
+
     const book = await prisma.book.create({
       data: {
-        userId: user.id,
+        userId: sessionUser.id,
         title: path.basename(name, path.extname(name)),
         format,
         originalFilename: name,
@@ -52,7 +72,7 @@ export async function POST(req: Request) {
     });
 
     const safeName = name.replace(/[^a-zA-Z0-9._-]/g, "_");
-    const dest = bookUploadPath(user.id, book.id, safeName);
+    const dest = bookUploadPath(sessionUser.id, book.id, safeName);
     const buffer = Buffer.from(await file.arrayBuffer());
     await writeFileSafe(dest, buffer);
 
@@ -65,11 +85,10 @@ export async function POST(req: Request) {
       data: {
         bookId: book.id,
         status: "PENDING",
-        ttsProvider: process.env.TTS_PROVIDER || "mock",
+        ttsProvider: provider.name,
       },
     });
 
-    // Fire and forget for UX; await briefly to start
     processAudioJob(job.id).catch((err) => console.error("Job failed", job.id, err));
 
     return NextResponse.json({ book, job }, { status: 201 });
