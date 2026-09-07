@@ -29,7 +29,7 @@ See .env.example - DATABASE_URL, NEXTAUTH_URL, NEXTAUTH_SECRET, TTS_PROVIDER (mo
 
 ## Auth
 
-Credentials (remail+password), bcryptjs hashes, JWT sessions. No Clerk required.
+Credentials (email+password), bcryptjs hashes, JWT sessions. No Clerk required.
 
 ## Data model
 
