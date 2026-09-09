@@ -17,7 +17,7 @@ ShelfCast is a production-oriented web SaaS: upload owned EPUB or text-layer PDF
 ## Architecture
 
 - **Next.js 15** (App Router, `output: 'standalone'`) + TypeScript + Tailwind
-- **Auth.js / NextAuth v4** — email + password, JWT sessions
+- **Auth.js / NextAuth v4** — email + password and Google OAuth, JWT sessions (Prisma adapter for Account linking)
 - **Prisma + PostgreSQL** — migrations under `prisma/migrations`
 - **DB-backed job queue** — `AudioJob` statuses `QUEUED → PROCESSING → DONE/FAILED` (no Redis for v1)
 - **Worker process** — `npm run worker` / Compose `worker` service polls and claims jobs
@@ -61,6 +61,7 @@ npm run worker       # terminal 2 — required for conversions
 | --- | --- |
 | `DATABASE_URL` | Postgres URL |
 | `NEXTAUTH_URL` / `NEXTAUTH_SECRET` | Auth |
+| `GOOGLE_CLIENT_ID` / `GOOGLE_CLIENT_SECRET` | Optional Google sign-in |
 | `NEXT_PUBLIC_APP_URL` | Public URL for Stripe redirects |
 | `TTS_PROVIDER` / `OPENAI_API_KEY` | Pro requires openai + key |
 | `STORAGE_DRIVER` | `local` or `s3` |
@@ -83,6 +84,19 @@ npm run worker       # terminal 2 — required for conversions
 6. Configure Stripe live keys, webhook endpoint `https://<domain>/api/billing/webhook`, and Price IDs.
 
 See `railway.toml` for build/healthcheck defaults.
+
+
+## Google OAuth setup
+
+1. Open [Google Cloud Console](https://console.cloud.google.com/) → APIs & Services → Credentials.
+2. Create an **OAuth client ID** of type **Web application**.
+3. Add authorized redirect URIs:
+   - `http://localhost:3000/api/auth/callback/google`
+   - `https://YOUR_DOMAIN/api/auth/callback/google`
+4. Copy the client ID and secret into `.env` as `GOOGLE_CLIENT_ID` and `GOOGLE_CLIENT_SECRET` (never commit real secrets).
+5. Restart the web app. Login and Signup include **Continue with Google**; OAuth succeeds once both vars are set.
+
+Same-email Google sign-in links to an existing credentials user via NextAuth `allowDangerousEmailAccountLinking` (Google emails are verified). OAuth-only users may have a null `passwordHash`; email/password login still works for users who set a password.
 
 ## Pricing
 

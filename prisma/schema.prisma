@@ -28,7 +28,9 @@ model User {
   id                   String    @id @default(cuid())
   name                 String?
   email                String    @unique
-  passwordHash         String
+  emailVerified        DateTime?
+  image                String?
+  passwordHash         String?
   plan                 Plan      @default(FREE)
   planStatus           String?
   stripeCustomerId     String?   @unique
