@@ -8,10 +8,16 @@ export type { TtsProvider, TtsSynthesizeInput, TtsSynthesizeResult } from "./typ
 export { MockTtsProvider } from "./mock";
 export { OpenAiTtsProvider } from "./openai";
 
+export class ProTtsMisconfiguredError extends Error {
+  constructor(message: string) {
+    super(message);
+    this.name = "ProTtsMisconfiguredError";
+  }
+}
+
 /**
- * Resolve TTS provider for a user plan.
- * Free (or inactive Pro) always gets Mock — even if OPENAI_API_KEY / TTS_PROVIDER=openai are set.
- * Pro uses OpenAI when configured; otherwise falls back to mock.
+ * Free always gets Mock.
+ * Pro requires OpenAI — never silently falls back to mock.
  */
 export function getTtsProviderForPlan(
   plan: Plan | string | null | undefined,
@@ -21,15 +27,18 @@ export function getTtsProviderForPlan(
     return new MockTtsProvider();
   }
 
-  const name = (process.env.TTS_PROVIDER || "mock").toLowerCase();
+  const name = (process.env.TTS_PROVIDER || "openai").toLowerCase();
   if (name === "openai" && process.env.OPENAI_API_KEY) {
     return new OpenAiTtsProvider();
   }
-  // Pro without OpenAI key still converts via mock so the product works locally.
-  return new MockTtsProvider();
+
+  throw new ProTtsMisconfiguredError(
+    "Pro plan requires a valid OpenAI TTS configuration. Set TTS_PROVIDER=openai and OPENAI_API_KEY. " +
+      "Mock TTS is only available on the Free plan."
+  );
 }
 
-/** @deprecated Prefer getTtsProviderForPlan — env-only resolution ignores billing. */
+/** @deprecated Prefer getTtsProviderForPlan */
 export function getTtsProvider(): TtsProvider {
   const name = (process.env.TTS_PROVIDER || "mock").toLowerCase();
   if (name === "openai") return new OpenAiTtsProvider();

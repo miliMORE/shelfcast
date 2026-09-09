@@ -1,5 +1,6 @@
 import fs from "fs/promises";
 import path from "path";
+import { getStorage } from "@/lib/storage";
 
 export interface Chapter {
   title: string;
@@ -11,73 +12,104 @@ export interface ExtractResult {
   author?: string;
   chapters: Chapter[];
   unsupportedReason?: string;
+  truncated?: boolean;
+  truncatedReason?: string;
 }
 
 const MAX_CHARS = 120_000;
 
 export async function extractFromFile(
-  filePath: string,
+  storageKey: string,
   format: "EPUB" | "PDF",
   originalFilename: string
 ): Promise<ExtractResult> {
-  if (format === "EPUB") return extractEpub(filePath, originalFilename);
-  return extractPdf(filePath, originalFilename);
+  if (format === "EPUB") return extractEpub(storageKey, originalFilename);
+  return extractPdf(storageKey, originalFilename);
 }
 
-async function extractEpub(filePath: string, originalFilename: string): Promise<ExtractResult> {
-  const mod: any = await import("epub2");
-  const EpubCtor: any = mod.EPub || mod.default?.EPub || mod.default || mod;
+async function loadBytes(storageKey: string): Promise<Buffer> {
+  try {
+    return await getStorage().get(storageKey);
+  } catch {
+    return fs.readFile(storageKey);
+  }
+}
 
-  return new Promise((resolve, reject) => {
-    const epub = new EpubCtor(filePath);
-    epub.on("error", (err: Error) => reject(err));
-    epub.on("end", async () => {
-      try {
-        const metaTitle = epub.metadata?.title || stripExt(originalFilename);
-        const author = epub.metadata?.creator || undefined;
-        const chapters: Chapter[] = [];
-        const flow: any[] = epub.flow || [];
+async function extractEpub(storageKey: string, originalFilename: string): Promise<ExtractResult> {
+  const bytes = await loadBytes(storageKey);
+  const tmpDir = path.join(process.cwd(), ".tmp-extract");
+  await fs.mkdir(tmpDir, { recursive: true });
+  const tmpPath = path.join(
+    tmpDir,
+    `epub-${Date.now()}-${Math.random().toString(36).slice(2)}.epub`
+  );
+  await fs.writeFile(tmpPath, bytes);
 
-        for (let i = 0; i < flow.length; i++) {
-          const chapter = flow[i];
-          const id = chapter.id;
-          const text: string = await new Promise((res, rej) => {
-            epub.getChapter(id, (err: Error | null, data: string) => {
-              if (err) rej(err);
-              else res(stripHtml(data || ""));
+  try {
+    const mod: any = await import("epub2");
+    const EpubCtor: any = mod.EPub || mod.default?.EPub || mod.default || mod;
+
+    return await new Promise((resolve, reject) => {
+      const epub = new EpubCtor(tmpPath);
+      epub.on("error", (err: Error) => reject(err));
+      epub.on("end", async () => {
+        try {
+          const metaTitle = epub.metadata?.title || stripExt(originalFilename);
+          const author = epub.metadata?.creator || undefined;
+          const chapters: Chapter[] = [];
+          const flow: any[] = epub.flow || [];
+
+          for (let i = 0; i < flow.length; i++) {
+            const chapter = flow[i];
+            const id = chapter.id;
+            const text: string = await new Promise((res, rej) => {
+              epub.getChapter(id, (err: Error | null, data: string) => {
+                if (err) rej(err);
+                else res(stripHtml(data || ""));
+              });
             });
-          });
-          const cleaned = text.replace(/\s+/g, " ").trim();
-          if (cleaned.length < 40) continue;
-          chapters.push({
-            title: chapter.title || "Chapter " + (chapters.length + 1),
-            text: cleaned,
-          });
-        }
+            const cleaned = text.replace(/\s+/g, " ").trim();
+            if (cleaned.length < 40) continue;
+            chapters.push({
+              title: chapter.title || "Chapter " + (chapters.length + 1),
+              text: cleaned,
+            });
+          }
 
-        if (chapters.length === 0) {
-          chapters.push({
-            title: "Full text",
-            text: "No chapter text could be extracted from this EPUB. Placeholder for " + metaTitle + ".",
-          });
-        }
+          if (chapters.length === 0) {
+            chapters.push({
+              title: "Full text",
+              text:
+                "No chapter text could be extracted from this EPUB. Placeholder for " +
+                metaTitle +
+                ".",
+            });
+          }
 
-        resolve({
-          title: metaTitle,
-          author,
-          chapters: trimChapters(chapters),
-        });
-      } catch (e) {
-        reject(e);
-      }
+          const trimmed = trimChapters(chapters);
+          resolve({
+            title: metaTitle,
+            author,
+            chapters: trimmed.chapters,
+            truncated: trimmed.truncated,
+            truncatedReason: trimmed.truncated
+              ? `Text was truncated to ${MAX_CHARS.toLocaleString()} characters during extraction.`
+              : undefined,
+          });
+        } catch (e) {
+          reject(e);
+        }
+      });
+      epub.parse();
     });
-    epub.parse();
-  });
+  } finally {
+    await fs.unlink(tmpPath).catch(() => undefined);
+  }
 }
 
-async function extractPdf(filePath: string, originalFilename: string): Promise<ExtractResult> {
+async function extractPdf(storageKey: string, originalFilename: string): Promise<ExtractResult> {
   const pdfParse = (await import("pdf-parse")).default;
-  const dataBuffer = await fs.readFile(filePath);
+  const dataBuffer = await loadBytes(storageKey);
   const parsed = await pdfParse(dataBuffer);
   const text = (parsed.text || "").replace(/\r/g, "").trim();
 
@@ -91,10 +123,15 @@ async function extractPdf(filePath: string, originalFilename: string): Promise<E
   }
 
   const chapters = splitIntoChapters(text, stripExt(originalFilename));
+  const trimmed = trimChapters(chapters);
   return {
     title: parsed.info?.Title || stripExt(originalFilename),
     author: parsed.info?.Author || undefined,
-    chapters: trimChapters(chapters),
+    chapters: trimmed.chapters,
+    truncated: trimmed.truncated,
+    truncatedReason: trimmed.truncated
+      ? `Text was truncated to ${MAX_CHARS.toLocaleString()} characters during extraction.`
+      : undefined,
   };
 }
 
@@ -116,23 +153,27 @@ function splitIntoChapters(text: string, fallbackTitle: string): Chapter[] {
       text: text.slice(i, i + chunkSize).replace(/\s+/g, " ").trim(),
     });
   }
-  if (chapters.length === 0) {
-    chapters.push({ title: fallbackTitle, text });
-  }
+  if (chapters.length === 0) chapters.push({ title: fallbackTitle, text });
   return chapters;
 }
 
-function trimChapters(chapters: Chapter[]): Chapter[] {
+function trimChapters(chapters: Chapter[]): { chapters: Chapter[]; truncated: boolean } {
   let total = 0;
   const out: Chapter[] = [];
+  let truncated = false;
   for (const ch of chapters) {
-    if (total >= MAX_CHARS) break;
+    if (total >= MAX_CHARS) {
+      truncated = true;
+      break;
+    }
     const remaining = MAX_CHARS - total;
     const text = ch.text.slice(0, remaining);
+    if (text.length < ch.text.length) truncated = true;
     out.push({ ...ch, text });
     total += text.length;
   }
-  return out;
+  if (out.length < chapters.length) truncated = true;
+  return { chapters: out, truncated };
 }
 
 function stripHtml(html: string): string {

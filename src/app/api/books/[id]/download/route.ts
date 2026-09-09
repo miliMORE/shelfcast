@@ -1,8 +1,7 @@
 import { NextResponse } from "next/server";
-import fs from "fs/promises";
-import path from "path";
 import { prisma } from "@/lib/prisma";
 import { requireUser } from "@/lib/session";
+import { getStorage } from "@/lib/storage";
 
 export async function GET(
   _req: Request,
@@ -20,12 +19,13 @@ export async function GET(
   const asset = book.assets[0];
   if (!asset) return NextResponse.json({ error: "No audio yet" }, { status: 404 });
 
-  const data = await fs.readFile(asset.storagePath);
+  const data = await getStorage().get(asset.storagePath);
   const ext = asset.format || "wav";
   const mime = ext === "mp3" ? "audio/mpeg" : "audio/wav";
-  const filename = (book.title || "audiobook").replace(/[^a-zA-Z0-9._-]/g, "_") + "." + ext;
+  const filename =
+    (book.title || "audiobook").replace(/[^a-zA-Z0-9._-]/g, "_") + "." + ext;
 
-  return new NextResponse(data, {
+  return new NextResponse(new Uint8Array(data), {
     headers: {
       "Content-Type": mime,
       "Content-Disposition": 'attachment; filename="' + filename + '"',

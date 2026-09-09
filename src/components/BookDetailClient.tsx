@@ -2,12 +2,14 @@
 
 import { useEffect, useState } from "react";
 import Link from "next/link";
+import { useRouter } from "next/navigation";
 
 type Job = {
   id: string;
   status: string;
   progress: number;
   errorMessage?: string | null;
+  message?: string | null;
   chapterCount?: number | null;
   chunkCount?: number | null;
   ttsProvider?: string | null;
@@ -26,8 +28,10 @@ type Book = {
 };
 
 export function BookDetailClient({ bookId }: { bookId: string }) {
+  const router = useRouter();
   const [book, setBook] = useState<Book | null>(null);
   const [busy, setBusy] = useState(false);
+  const [deleting, setDeleting] = useState(false);
 
   async function load() {
     const res = await fetch("/api/books/" + bookId);
@@ -59,11 +63,22 @@ export function BookDetailClient({ bookId }: { bookId: string }) {
     setBusy(false);
   }
 
+  async function remove() {
+    if (!confirm("Delete this book and its audio files?")) return;
+    setDeleting(true);
+    const res = await fetch("/api/books/" + bookId, { method: "DELETE" });
+    setDeleting(false);
+    if (res.ok) {
+      router.push("/library");
+      router.refresh();
+    }
+  }
+
   if (!book) return <p className="text-sm text-slate-500">Loading…</p>;
 
   const job = book.jobs[0];
   const asset = book.assets[0];
-  const done = job?.status === "COMPLETED" && !!asset;
+  const done = (job?.status === "DONE" || job?.status === "COMPLETED") && !!asset;
 
   return (
     <div className="space-y-6">
@@ -95,9 +110,12 @@ export function BookDetailClient({ bookId }: { bookId: string }) {
                 style={{ width: Math.min(100, job.progress) + "%" }}
               />
             </div>
-            {job.errorMessage && (
-              <p className="text-sm text-red-600">{job.errorMessage}</p>
+            {job.message && (
+              <div className="rounded-lg border border-amber-200 bg-amber-50 px-3 py-2 text-sm text-amber-900">
+                {job.message}
+              </div>
             )}
+            {job.errorMessage && <p className="text-sm text-red-600">{job.errorMessage}</p>}
           </div>
         ) : (
           <p className="text-sm text-slate-500">No job yet.</p>
@@ -117,7 +135,14 @@ export function BookDetailClient({ bookId }: { bookId: string }) {
             disabled={busy}
             className="rounded-md border border-slate-300 px-4 py-2 text-sm hover:bg-slate-50 disabled:opacity-60"
           >
-            {busy ? "Working…" : "Re-run conversion"}
+            {busy ? "Queued…" : "Re-run conversion"}
+          </button>
+          <button
+            onClick={remove}
+            disabled={deleting}
+            className="rounded-md border border-red-200 px-4 py-2 text-sm text-red-700 hover:bg-red-50 disabled:opacity-60"
+          >
+            {deleting ? "Deleting…" : "Delete book"}
           </button>
         </div>
       </div>

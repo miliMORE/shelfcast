@@ -1,6 +1,7 @@
 import { NextResponse } from "next/server";
 import { prisma } from "@/lib/prisma";
 import { requireUser } from "@/lib/session";
+import { getStorage, bookPrefix } from "@/lib/storage";
 
 export async function GET(
   _req: Request,
@@ -31,6 +32,12 @@ export async function DELETE(
 
   const book = await prisma.book.findFirst({ where: { id, userId: user.id } });
   if (!book) return NextResponse.json({ error: "Not found" }, { status: 404 });
+
+  try {
+    await getStorage().deletePrefix(bookPrefix(user.id, book.id));
+  } catch (err) {
+    console.error("storage cleanup failed", book.id, err);
+  }
 
   await prisma.book.delete({ where: { id } });
   return NextResponse.json({ ok: true });

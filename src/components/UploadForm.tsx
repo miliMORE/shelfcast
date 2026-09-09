@@ -22,7 +22,7 @@ export function UploadForm() {
       setError(data.error || "Upload failed");
       return;
     }
-    setMessage("Upload started — conversion is running.");
+    setMessage("Upload queued — the worker will convert it shortly.");
     router.push("/books/" + data.book.id);
     router.refresh();
   }
@@ -30,7 +30,7 @@ export function UploadForm() {
   return (
     <form onSubmit={onSubmit} className="space-y-3 rounded-xl border border-dashed border-brand-300 bg-brand-50/50 p-5">
       <h2 className="font-semibold text-slate-900">Upload a book</h2>
-      <p className="text-sm text-slate-600">EPUB or text-layer PDF. Max ~20MB for local MVP.</p>
+      <p className="text-sm text-slate-600">EPUB or text-layer PDF. Maximum 20MB.</p>
       {error && <p className="text-sm text-red-600">{error}</p>}
       {message && <p className="text-sm text-green-700">{message}</p>}
       <input

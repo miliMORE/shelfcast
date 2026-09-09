@@ -68,8 +68,15 @@ export default function SignupPage() {
         <label className="flex items-start gap-2 text-xs text-slate-600">
           <input type="checkbox" required className="mt-0.5" />
           <span>
-            I warrant I own or have rights to any books I upload, will not circumvent DRM, and
-            understand audio is private to my account (ToS stub).
+            I agree to the{" "}
+            <Link href="/terms" className="underline">
+              Terms of Service
+            </Link>{" "}
+            and{" "}
+            <Link href="/privacy" className="underline">
+              Privacy Policy
+            </Link>
+            . I warrant I own or have rights to any books I upload and will not circumvent DRM.
           </span>
         </label>
         <button

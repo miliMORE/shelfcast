@@ -89,9 +89,11 @@ export default function HomePage() {
       </section>
 
       <section className="rounded-xl border border-accent-200/80 bg-accent-50/70 px-5 py-4 text-sm leading-relaxed text-slate-800">
-        <strong className="font-semibold text-brand-900">Terms stub:</strong> By uploading, you
-        warrant you own or have rights to convert the book for personal use. ShelfCast does not
-        circumvent DRM. Generated audio is private to your account and not for redistribution.
+        <strong className="font-semibold text-brand-900">Ownership matters:</strong> By uploading,
+        you warrant you own or have rights to convert the book for personal use. ShelfCast does not
+        circumvent DRM. Generated audio is private to your account and not for redistribution. Read
+        our <a href="/terms" className="font-medium text-brand-800 underline">Terms</a> and{" "}
+        <a href="/privacy" className="font-medium text-brand-800 underline">Privacy Policy</a>.
       </section>
     </div>
   );

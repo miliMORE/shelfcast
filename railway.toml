@@ -1,0 +1,14 @@
+# Railway: create TWO services from this repo (web + worker), plus Postgres plugin.
+# Web start: npx prisma migrate deploy && node server.js  (Dockerfile CMD)
+# Worker start: npx tsx src/worker.ts
+# Share the same env vars across both services.
+# Add an S3-compatible bucket (R2/S3) and set STORAGE_DRIVER=s3 + S3_* vars.
+
+[build]
+builder = "DOCKERFILE"
+dockerfilePath = "Dockerfile"
+
+[deploy]
+healthcheckPath = "/api/health"
+healthcheckTimeout = 30
+restartPolicyType = "ON_FAILURE"

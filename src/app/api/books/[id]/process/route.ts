@@ -1,9 +1,8 @@
 import { NextResponse } from "next/server";
 import { prisma } from "@/lib/prisma";
 import { requireUser } from "@/lib/session";
-import { processAudioJob } from "@/lib/pipeline/process";
 import { getUsageSnapshot } from "@/lib/billing/usage";
-import { getTtsProviderForPlan } from "@/lib/tts";
+import { getTtsProviderForPlan, ProTtsMisconfiguredError } from "@/lib/tts";
 
 export async function POST(
   _req: Request,
@@ -17,22 +16,16 @@ export async function POST(
   if (!book) return NextResponse.json({ error: "Not found" }, { status: 404 });
 
   const usage = await getUsageSnapshot(user.id);
-  const provider = getTtsProviderForPlan(usage?.plan, usage?.planStatus);
-
-  const job = await prisma.audioJob.create({
-    data: {
-      bookId: book.id,
-      status: "PENDING",
-      ttsProvider: provider.name,
-    },
-  });
-
+  let ttsProviderName = "mock";
   try {
-    await processAudioJob(job.id);
-  } catch (e) {
-    console.error(e);
+    ttsProviderName = getTtsProviderForPlan(usage?.plan, usage?.planStatus).name;
+  } catch (err) {
+    if (err instanceof ProTtsMisconfiguredError) ttsProviderName = "openai";
   }
 
-  const updated = await prisma.audioJob.findUnique({ where: { id: job.id } });
-  return NextResponse.json({ job: updated });
+  const job = await prisma.audioJob.create({
+    data: { bookId: book.id, status: "QUEUED", ttsProvider: ttsProviderName },
+  });
+
+  return NextResponse.json({ job });
 }

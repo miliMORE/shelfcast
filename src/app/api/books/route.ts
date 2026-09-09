@@ -2,11 +2,13 @@ import { NextResponse } from "next/server";
 import path from "path";
 import { prisma } from "@/lib/prisma";
 import { requireUser } from "@/lib/session";
-import { bookUploadPath, writeFileSafe } from "@/lib/storage";
-import { processAudioJob } from "@/lib/pipeline/process";
+import { getStorage, bookObjectKey } from "@/lib/storage";
 import { bookLimitForPlan } from "@/lib/billing/plans";
 import { effectivePlan, getUsageSnapshot } from "@/lib/billing/usage";
-import { getTtsProviderForPlan } from "@/lib/tts";
+import { getTtsProviderForPlan, ProTtsMisconfiguredError } from "@/lib/tts";
+import { clientIp, rateLimit } from "@/lib/rate-limit";
+
+const MAX_UPLOAD_BYTES = 20 * 1024 * 1024;
 
 export async function GET() {
   const user = await requireUser();
@@ -27,11 +29,26 @@ export async function POST(req: Request) {
   const sessionUser = await requireUser();
   if (!sessionUser) return NextResponse.json({ error: "Unauthorized" }, { status: 401 });
 
+  const ip = clientIp(req);
+  const rl = rateLimit(`upload:${sessionUser.id}:${ip}`, 10, 60_000);
+  if (!rl.ok) {
+    return NextResponse.json(
+      { error: "Too many uploads. Try again shortly." },
+      { status: 429, headers: { "Retry-After": String(rl.retryAfterSec) } }
+    );
+  }
+
   try {
-    const usage = await getUsageSnapshot(sessionUser.id);
-    if (!usage) {
-      return NextResponse.json({ error: "User not found" }, { status: 404 });
+    const contentLength = req.headers.get("content-length");
+    if (contentLength && Number(contentLength) > MAX_UPLOAD_BYTES + 64_000) {
+      return NextResponse.json(
+        { error: "File too large. Maximum upload size is 20MB." },
+        { status: 413 }
+      );
     }
+
+    const usage = await getUsageSnapshot(sessionUser.id);
+    if (!usage) return NextResponse.json({ error: "User not found" }, { status: 404 });
 
     const plan = effectivePlan(usage);
     const limit = bookLimitForPlan(plan);
@@ -50,6 +67,13 @@ export async function POST(req: Request) {
       return NextResponse.json({ error: "File required" }, { status: 400 });
     }
 
+    if (typeof file.size === "number" && file.size > MAX_UPLOAD_BYTES) {
+      return NextResponse.json(
+        { error: "File too large. Maximum upload size is 20MB." },
+        { status: 413 }
+      );
+    }
+
     const name = file.name || "upload";
     const lower = name.toLowerCase();
     let format: "EPUB" | "PDF" | null = null;
@@ -59,7 +83,12 @@ export async function POST(req: Request) {
       return NextResponse.json({ error: "Only EPUB and PDF are supported" }, { status: 400 });
     }
 
-    const provider = getTtsProviderForPlan(usage.plan, usage.planStatus);
+    let ttsProviderName = "mock";
+    try {
+      ttsProviderName = getTtsProviderForPlan(usage.plan, usage.planStatus).name;
+    } catch (err) {
+      if (err instanceof ProTtsMisconfiguredError) ttsProviderName = "openai";
+    }
 
     const book = await prisma.book.create({
       data: {
@@ -72,24 +101,23 @@ export async function POST(req: Request) {
     });
 
     const safeName = name.replace(/[^a-zA-Z0-9._-]/g, "_");
-    const dest = bookUploadPath(sessionUser.id, book.id, safeName);
+    const key = bookObjectKey(sessionUser.id, book.id, safeName);
     const buffer = Buffer.from(await file.arrayBuffer());
-    await writeFileSafe(dest, buffer);
+    if (buffer.length > MAX_UPLOAD_BYTES) {
+      await prisma.book.delete({ where: { id: book.id } });
+      return NextResponse.json(
+        { error: "File too large. Maximum upload size is 20MB." },
+        { status: 413 }
+      );
+    }
 
-    await prisma.book.update({
-      where: { id: book.id },
-      data: { storagePath: dest },
-    });
+    const contentType = format === "PDF" ? "application/pdf" : "application/epub+zip";
+    await getStorage().put(key, buffer, contentType);
+    await prisma.book.update({ where: { id: book.id }, data: { storagePath: key } });
 
     const job = await prisma.audioJob.create({
-      data: {
-        bookId: book.id,
-        status: "PENDING",
-        ttsProvider: provider.name,
-      },
+      data: { bookId: book.id, status: "QUEUED", ttsProvider: ttsProviderName },
     });
-
-    processAudioJob(job.id).catch((err) => console.error("Job failed", job.id, err));
 
     return NextResponse.json({ book, job }, { status: 201 });
   } catch (e) {

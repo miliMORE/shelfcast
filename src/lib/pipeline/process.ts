@@ -1,8 +1,8 @@
 import { prisma } from "@/lib/prisma";
 import { extractFromFile, chunkText } from "./extract";
-import { getTtsProviderForPlan } from "@/lib/tts";
+import { getTtsProviderForPlan, ProTtsMisconfiguredError } from "@/lib/tts";
 import { assembleAudio } from "./assemble";
-import { audioPath, writeFileSafe } from "@/lib/storage";
+import { getStorage, audioObjectKey } from "@/lib/storage";
 import {
   assertCanConsumeChars,
   consumeTtsChars,
@@ -11,10 +11,7 @@ import {
 } from "@/lib/billing/usage";
 import { isProPlan } from "@/lib/billing/plans";
 
-/**
- * Run conversion for a book/job. Designed to be awaited from an API route
- * for the local MVP (synchronous-ish). Production would use a queue worker.
- */
+/** Process a claimed AudioJob. Called by the worker — not from request handlers. */
 export async function processAudioJob(jobId: string) {
   const job = await prisma.audioJob.findUnique({
     where: { id: jobId },
@@ -39,12 +36,28 @@ export async function processAudioJob(jobId: string) {
   const { book } = job;
   const billingUser = await ensureUsageMonth(book.user);
   const plan = effectivePlan(billingUser);
-  const provider = getTtsProviderForPlan(billingUser.plan, billingUser.planStatus);
+
+  let provider;
+  try {
+    provider = getTtsProviderForPlan(billingUser.plan, billingUser.planStatus);
+  } catch (err) {
+    const message =
+      err instanceof ProTtsMisconfiguredError
+        ? err.message
+        : err instanceof Error
+          ? err.message
+          : "TTS provider misconfigured";
+    await prisma.audioJob.update({
+      where: { id: jobId },
+      data: { status: "FAILED", errorMessage: message, progress: 0 },
+    });
+    return;
+  }
 
   try {
     await prisma.audioJob.update({
       where: { id: jobId },
-      data: { status: "EXTRACTING", progress: 5, ttsProvider: provider.name },
+      data: { status: "PROCESSING", progress: 5, ttsProvider: provider.name, message: null },
     });
 
     const extracted = await extractFromFile(
@@ -56,11 +69,7 @@ export async function processAudioJob(jobId: string) {
     if (extracted.unsupportedReason) {
       await prisma.audioJob.update({
         where: { id: jobId },
-        data: {
-          status: "FAILED",
-          errorMessage: extracted.unsupportedReason,
-          progress: 0,
-        },
+        data: { status: "FAILED", errorMessage: extracted.unsupportedReason, progress: 0 },
       });
       return;
     }
@@ -68,10 +77,7 @@ export async function processAudioJob(jobId: string) {
     if (extracted.title && extracted.title !== book.title) {
       await prisma.book.update({
         where: { id: book.id },
-        data: {
-          title: extracted.title,
-          author: extracted.author ?? book.author,
-        },
+        data: { title: extracted.title, author: extracted.author ?? book.author },
       });
     }
 
@@ -82,16 +88,23 @@ export async function processAudioJob(jobId: string) {
       }
     }
 
-    // Free: keep demos snappy; Pro: allow longer books (still soft-capped).
     const maxChunks = isProPlan(plan) ? 400 : 40;
     const chunks = allChunks.slice(0, maxChunks);
+    const chunkTruncated = allChunks.length > chunks.length;
     const totalChars = chunks.reduce((sum, c) => sum + c.text.length, 0);
+
+    const notices: string[] = [];
+    if (extracted.truncated && extracted.truncatedReason) notices.push(extracted.truncatedReason);
+    if (chunkTruncated) {
+      notices.push(
+        `Conversion limited to ${maxChunks} text chunks (${allChunks.length} available). Upgrade or split the book for fuller audio.`
+      );
+    }
 
     try {
       await assertCanConsumeChars(book.userId, totalChars);
     } catch (quotaErr) {
-      const message =
-        quotaErr instanceof Error ? quotaErr.message : "TTS quota exceeded";
+      const message = quotaErr instanceof Error ? quotaErr.message : "TTS quota exceeded";
       await prisma.audioJob.update({
         where: { id: jobId },
         data: { status: "FAILED", errorMessage: message, progress: 0 },
@@ -102,10 +115,11 @@ export async function processAudioJob(jobId: string) {
     await prisma.audioJob.update({
       where: { id: jobId },
       data: {
-        status: "SYNTHESIZING",
+        status: "PROCESSING",
         progress: 15,
         chapterCount: extracted.chapters.length,
         chunkCount: chunks.length,
+        message: notices.length ? notices.join(" ") : null,
       },
     });
 
@@ -114,41 +128,33 @@ export async function processAudioJob(jobId: string) {
 
     for (let i = 0; i < chunks.length; i++) {
       const chunkTextLen = chunks[i].text.length;
-      // Re-check remaining quota mid-job in case of concurrent jobs
-      await assertCanConsumeChars(book.userId, chunkTextLen);
+      await consumeTtsChars(book.userId, chunkTextLen);
 
-      const result = await provider.synthesize({
-        text: chunks[i].text,
-        chunkIndex: i,
-      });
+      const result = await provider.synthesize({ text: chunks[i].text, chunkIndex: i });
       audioParts.push(result.audio);
       extension = result.extension;
 
-      await consumeTtsChars(book.userId, chunkTextLen);
-
       const progress = 15 + Math.floor(((i + 1) / chunks.length) * 70);
-      await prisma.audioJob.update({
-        where: { id: jobId },
-        data: { progress },
-      });
+      await prisma.audioJob.update({ where: { id: jobId }, data: { progress } });
     }
 
     await prisma.audioJob.update({
       where: { id: jobId },
-      data: { status: "ASSEMBLING", progress: 90 },
+      data: { status: "PROCESSING", progress: 90 },
     });
 
     const assembled = await assembleAudio(audioParts, extension);
     const filename = "audiobook." + extension;
-    const outPath = audioPath(book.userId, book.id, filename);
-    await writeFileSafe(outPath, assembled);
+    const key = audioObjectKey(book.userId, book.id, filename);
+    const contentType = extension === "mp3" ? "audio/mpeg" : "audio/wav";
+    await getStorage().put(key, assembled, contentType);
 
     const asset = await prisma.audioAsset.create({
       data: {
         bookId: book.id,
         jobId: job.id,
         format: extension,
-        storagePath: outPath,
+        storagePath: key,
         sizeBytes: assembled.length,
         durationSec: null,
       },
@@ -157,9 +163,10 @@ export async function processAudioJob(jobId: string) {
     await prisma.audioJob.update({
       where: { id: jobId },
       data: {
-        status: "COMPLETED",
+        status: "DONE",
         progress: 100,
         completedAt: new Date(),
+        message: notices.length ? notices.join(" ") : null,
       },
     });
 
