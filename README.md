@@ -108,8 +108,7 @@ Same-email Google sign-in links to an existing credentials user via NextAuth `al
 
 ## Legal
 
-- [/terms](/terms) — Terms of Service  
-- [/privacy](/privacy) — Privacy Policy  
+In-app routes (not GitHub links): `/terms` (Terms of Service) and `/privacy` (Privacy Policy). Source: [`src/app/terms/page.tsx`](src/app/terms/page.tsx), [`src/app/privacy/page.tsx`](src/app/privacy/page.tsx).
 
 ## Limitations
 
